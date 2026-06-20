@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Jupyter notebooks
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# PyTorch / ML artifacts
+*.pt
+*.pth
+*.ckpt
+*.pkl
+*.pickle
+wandb/
+runs/
+outputs/
+checkpoints/
+lightning_logs/
+
+# Data
+*.csv
+*.tsv
+*.json
+*.jsonl
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+
+Twitter15_16_dataset-main/*
