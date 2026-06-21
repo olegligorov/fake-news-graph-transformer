@@ -32,11 +32,26 @@ def _set_seed(seed: int):
         torch.cuda.manual_seed_all(seed)
 
 
-def train_epoch(model: nn.Module, loader: DataLoader, optimizer, criterion, device) -> float:
+def _flip_lap_pe(batch, lap_pe_start: int = 6, lap_pe_dim: int = 8):
+    assert batch.x.shape[1] == 30, f"Expected 30 node features, got {batch.x.shape[1]} — check _flip_lap_pe slice"
+    """Randomly flip sign of each LapPE eigenvector for all nodes in the same graph.
+
+    LapPE eigenvectors are sign-arbitrary (v and -v are both valid). Without this
+    augmentation the model overfits to the arbitrary sign choices in the dataset.
+    Operates in-place on batch.x columns [lap_pe_start : lap_pe_start + lap_pe_dim].
+    """
+    signs = (torch.randint(0, 2, (batch.num_graphs, lap_pe_dim), device=batch.x.device) * 2 - 1).float()
+    node_signs = signs[batch.batch]  # [num_nodes, lap_pe_dim]
+    batch.x[:, lap_pe_start: lap_pe_start + lap_pe_dim] *= node_signs
+
+
+def train_epoch(model: nn.Module, loader: DataLoader, optimizer, criterion, device, lap_pe_sign_flip: bool = False) -> float:
     model.train()
     total_loss = 0.0
     for batch in loader:
         batch = batch.to(device)
+        if lap_pe_sign_flip:
+            _flip_lap_pe(batch)
         optimizer.zero_grad()
         out = model(batch.x, batch.edge_index, batch.batch, edge_attr=batch.edge_attr)
         loss = criterion(out, batch.y.view(-1))
@@ -80,6 +95,7 @@ def run_experiment(
     weight_decay: float = 1e-4,
     patience: int | None = None,
     scheduler_patience: int = 10,
+    lap_pe_sign_flip: bool = False,
     device: str = "cpu",
     verbose: bool = True,
 ) -> dict:
@@ -88,6 +104,8 @@ def run_experiment(
     Args:
         patience: epochs without val_f1 improvement before early stopping. None = disabled.
         scheduler_patience: epochs without val_f1 improvement before LR reduction.
+        lap_pe_sign_flip: randomly flip LapPE eigenvector signs each training batch.
+                          Required for GPS; not needed for GCN/GAT.
     """
     criterion = nn.CrossEntropyLoss()
     seed_results = []
@@ -106,12 +124,12 @@ def run_experiment(
             optimizer, mode="max", patience=scheduler_patience, factor=0.5
         )
 
-        best_val_f1 = -1.0
+        best_val_f1 = -float("inf")
         best_state = None
         epochs_no_improve = 0
 
         for epoch in range(1, epochs + 1):
-            train_loss = train_epoch(model, train_loader, optimizer, criterion, device)
+            train_loss = train_epoch(model, train_loader, optimizer, criterion, device, lap_pe_sign_flip=lap_pe_sign_flip)
             val_metrics = eval_epoch(model, val_loader, criterion, device)
             scheduler.step(val_metrics["macro_f1"])
 
