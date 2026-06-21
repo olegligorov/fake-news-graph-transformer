@@ -44,7 +44,7 @@ print(f"Twitter15: {len(ds15)} graphs  Twitter16: {len(ds16)} graphs  in_channel
 GCN_KWARGS   = dict(in_channels=IN_CHANNELS, hidden_channels=128, num_layers=3, dropout=0.1)
 GAT_KWARGS   = dict(in_channels=IN_CHANNELS, hidden_channels=128, num_layers=3, heads=4, dropout=0.1)
 BIGCN_KWARGS = dict(in_channels=IN_CHANNELS, hidden_channels=128, num_layers=3, dropout=0.1)
-GPS_KWARGS   = dict(in_channels=IN_CHANNELS, hidden_channels=128, num_layers=3, heads=4, dropout=0.1, edge_dim=EDGE_DIM)
+GPS_KWARGS   = dict(in_channels=IN_CHANNELS, hidden_channels=128, num_layers=4, heads=4, dropout=0.1, edge_dim=EDGE_DIM)
 
 EXPERIMENTS = [
     ("GCN",   GCNClassifier,   GCN_KWARGS,   ds15, "results/gcn_twitter15.json",   dict(epochs=EPOCHS, warmup_ratio=0.1)),
