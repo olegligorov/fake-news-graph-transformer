@@ -51,9 +51,43 @@ def _flip_lap_pe(batch, lap_pe_start: int = 6, lap_pe_dim: int = 8):
     batch.x[:, lap_pe_start: lap_pe_start + lap_pe_dim] *= node_signs
 
 
-def train_epoch(model: nn.Module, loader: DataLoader, optimizer, criterion, device, lap_pe_sign_flip: bool = False) -> float:
+def _make_lr_lambda(warmup_steps: int, total_steps: int):
+    """Return a per-epoch LR multiplier: linear warmup then cosine decay to 0."""
+    def lr_lambda(step: int) -> float:
+        if step < warmup_steps:
+            return step / max(warmup_steps, 1)
+        progress = (step - warmup_steps) / max(total_steps - warmup_steps, 1)
+        return 0.5 * (1.0 + math.cos(math.pi * progress))
+    return lr_lambda
+
+
+def _token_batches(indices: list[int], dataset: Dataset, max_nodes: int, shuffle: bool, seed: int) -> list[list[int]]:
+    """Group indices into batches where total nodes per batch <= max_nodes.
+
+    Used for GPSConv multihead attention which runs to_dense_batch(N_max^2) per batch.
+    Prevents OOM when a few large cascades land in the same batch.
+    """
+    rng = random.Random(seed)
+    if shuffle:
+        indices = list(indices)
+        rng.shuffle(indices)
+    batches, current, current_nodes = [], [], 0
+    for idx in indices:
+        n = dataset[idx].num_nodes
+        if current and current_nodes + n > max_nodes:
+            batches.append(current)
+            current, current_nodes = [], 0
+        current.append(idx)
+        current_nodes += n
+    if current:
+        batches.append(current)
+    return batches
+
+
+def train_epoch(model: nn.Module, loader, optimizer, criterion, device, lap_pe_sign_flip: bool = False) -> float:
     model.train()
     total_loss = 0.0
+    n_graphs = 0
     for batch in loader:
         batch = batch.to(device)
         if lap_pe_sign_flip:
@@ -65,14 +99,16 @@ def train_epoch(model: nn.Module, loader: DataLoader, optimizer, criterion, devi
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
         total_loss += loss.item() * batch.num_graphs
-    return total_loss / len(loader.dataset)
+        n_graphs += batch.num_graphs
+    return total_loss / n_graphs
 
 
 @torch.no_grad()
-def eval_epoch(model: nn.Module, loader: DataLoader, criterion, device) -> dict:
+def eval_epoch(model: nn.Module, loader, criterion, device) -> dict:
     model.eval()
     total_loss = 0.0
     all_preds, all_labels = [], []
+    n_graphs = 0
     for batch in loader:
         batch = batch.to(device)
         out = model(batch.x, batch.edge_index, batch.batch, edge_attr=batch.edge_attr, ptr=batch.ptr)
@@ -81,11 +117,12 @@ def eval_epoch(model: nn.Module, loader: DataLoader, criterion, device) -> dict:
         preds = out.argmax(dim=1)
         all_preds.extend(preds.cpu().tolist())
         all_labels.extend(batch.y.view(-1).cpu().tolist())
+        n_graphs += batch.num_graphs
 
     acc = sum(p == l for p, l in zip(all_preds, all_labels)) / len(all_labels)
     macro_f1 = f1_score(all_labels, all_preds, average="macro", zero_division=0)
     return {
-        "loss": total_loss / len(loader.dataset),
+        "loss": total_loss / n_graphs,
         "acc": acc,
         "macro_f1": macro_f1,
     }
@@ -103,6 +140,7 @@ def run_experiment(
     patience: int | None = None,
     warmup_ratio: float = 0.1,
     lap_pe_sign_flip: bool = False,
+    max_nodes_per_batch: int | None = None,
     device: str = "cpu",
     verbose: bool = True,
 ) -> dict:
@@ -110,16 +148,15 @@ def run_experiment(
 
     Args:
         patience: epochs without val_f1 improvement before early stopping. None = disabled.
-        warmup_ratio: fraction of total steps used for linear LR warmup (cosine schedule after).
+        warmup_ratio: fraction of total epochs used for linear LR warmup (cosine decay after).
         lap_pe_sign_flip: randomly flip LapPE eigenvector signs each training batch.
                           Required for GPS; not needed for GCN/GAT.
+        max_nodes_per_batch: if set, use token-budget batching (cap total nodes per batch).
+                             Required for GPS multihead attention to avoid OOM on large cascades.
+                             Ignored when None (uses fixed batch_size instead).
     """
     # Fixed split across all seeds — only model init varies
     train_idx, val_idx, test_idx = stratified_split(dataset, split_seed=0)
-
-    train_loader = DataLoader([dataset[i] for i in train_idx], batch_size=batch_size, shuffle=True)
-    val_loader   = DataLoader([dataset[i] for i in val_idx],   batch_size=batch_size)
-    test_loader  = DataLoader([dataset[i] for i in test_idx],  batch_size=batch_size)
 
     # Class-weighted CE to handle label imbalance
     y_train = [dataset[i].y.item() for i in train_idx]
@@ -136,22 +173,28 @@ def run_experiment(
     for seed in seeds:
         _set_seed(seed)
 
+        if max_nodes_per_batch is not None:
+            # Token-budget batching: cap total nodes per batch to avoid N_max² OOM in GPS attention
+            train_batches = _token_batches(train_idx, dataset, max_nodes_per_batch, shuffle=True, seed=seed)
+            val_batches   = _token_batches(val_idx,   dataset, max_nodes_per_batch, shuffle=False, seed=seed)
+            test_batches  = _token_batches(test_idx,  dataset, max_nodes_per_batch, shuffle=False, seed=seed)
+            train_loader = [DataLoader([dataset[i] for i in b]) for b in train_batches]
+            val_loader   = [DataLoader([dataset[i] for i in b]) for b in val_batches]
+            test_loader  = [DataLoader([dataset[i] for i in b]) for b in test_batches]
+        else:
+            train_loader = DataLoader([dataset[i] for i in train_idx], batch_size=batch_size, shuffle=True)
+            val_loader   = DataLoader([dataset[i] for i in val_idx],   batch_size=batch_size)
+            test_loader  = DataLoader([dataset[i] for i in test_idx],  batch_size=batch_size)
+
         model = model_cls(**model_kwargs).to(device)
         optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
 
         total_steps = epochs
         warmup_steps = int(warmup_ratio * total_steps)
-
-        def lr_lambda(step):
-            if step < warmup_steps:
-                return step / max(warmup_steps, 1)
-            progress = (step - warmup_steps) / max(total_steps - warmup_steps, 1)
-            return 0.5 * (1.0 + math.cos(math.pi * progress))
-
-        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, _make_lr_lambda(warmup_steps, total_steps))
 
         best_val_f1 = -float("inf")
-        best_state = None
+        best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}  # snapshot before training
         epochs_no_improve = 0
 
         for epoch in range(1, epochs + 1):

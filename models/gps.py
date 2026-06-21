@@ -30,7 +30,7 @@ class GPSClassifier(nn.Module):
                 edge_dim=edge_dim,
             )
             self.convs.append(
-                GPSConv(hidden_channels, gine, heads=heads, dropout=dropout, attn_type="performer")
+                GPSConv(hidden_channels, gine, heads=heads, dropout=dropout, attn_type="multihead")
             )
 
         # 4-way readout: root node + attentional aggregation + mean + max
