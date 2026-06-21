@@ -39,7 +39,7 @@ def train_epoch(model: nn.Module, loader: DataLoader, optimizer, criterion, devi
         batch = batch.to(device)
         optimizer.zero_grad()
         out = model(batch.x, batch.edge_index, batch.batch, edge_attr=batch.edge_attr)
-        loss = criterion(out, batch.y.squeeze())
+        loss = criterion(out, batch.y.view(-1))
         loss.backward()
         optimizer.step()
         total_loss += loss.item() * batch.num_graphs
@@ -54,11 +54,11 @@ def eval_epoch(model: nn.Module, loader: DataLoader, criterion, device) -> dict:
     for batch in loader:
         batch = batch.to(device)
         out = model(batch.x, batch.edge_index, batch.batch, edge_attr=batch.edge_attr)
-        loss = criterion(out, batch.y.squeeze())
+        loss = criterion(out, batch.y.view(-1))
         total_loss += loss.item() * batch.num_graphs
         preds = out.argmax(dim=1)
         all_preds.extend(preds.cpu().tolist())
-        all_labels.extend(batch.y.squeeze().cpu().tolist())
+        all_labels.extend(batch.y.view(-1).cpu().tolist())
 
     acc = sum(p == l for p, l in zip(all_preds, all_labels)) / len(all_labels)
     macro_f1 = f1_score(all_labels, all_preds, average="macro", zero_division=0)
@@ -96,7 +96,7 @@ def run_experiment(
         optimizer = torch.optim.Adam(model.parameters(), lr=lr)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=10, factor=0.5)
 
-        best_val_f1 = 0.0
+        best_val_f1 = -1.0
         best_state = None
 
         for epoch in range(1, epochs + 1):

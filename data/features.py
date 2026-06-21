@@ -23,16 +23,17 @@ def compute_features(edge_index: torch.Tensor, timestamps: list[float], num_node
         timestamps: list of float timestamps per node, length num_nodes
         num_nodes: total node count including ROOT (node 0)
     """
-    # --- adjacency lists ---
-    children: list[list[int]] = [[] for _ in range(num_nodes)]
+    # --- adjacency lists (deduplicated — dataset.py already drops dupes, but be safe) ---
+    children: list[set[int]] = [set() for _ in range(num_nodes)]
     in_deg = [0] * num_nodes
 
     if edge_index.numel() > 0:
         src = edge_index[0].tolist()
         dst = edge_index[1].tolist()
         for u, v in zip(src, dst):
-            children[u].append(v)
-            in_deg[v] += 1
+            if v not in children[u]:
+                children[u].add(v)
+                in_deg[v] += 1
 
     # --- depth via BFS from ROOT (node 0) ---
     depth = [-1] * num_nodes
@@ -54,7 +55,7 @@ def compute_features(edge_index: torch.Tensor, timestamps: list[float], num_node
     while stack:
         node, returning = stack.pop()
         if returning:
-            for child in children[node]:
+            for child in children[node]:  # children is a set — no duplicates
                 subtree_size[node] += subtree_size[child]
         else:
             if visited[node]:
@@ -65,7 +66,7 @@ def compute_features(edge_index: torch.Tensor, timestamps: list[float], num_node
                 if not visited[child]:
                     stack.append((child, False))
 
-    out_deg = [len(c) for c in children]
+    out_deg = [len(c) for c in children]  # children is a set so no duplicates
 
     # --- assemble raw features ---
     ts = torch.tensor(timestamps, dtype=torch.float32)

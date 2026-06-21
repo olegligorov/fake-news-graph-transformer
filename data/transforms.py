@@ -11,7 +11,7 @@ import torch
 from torch_geometric.data import Data
 from torch_geometric.transforms import AddLaplacianEigenvectorPE, AddRandomWalkPE
 
-_lap_pe = AddLaplacianEigenvectorPE(k=8, attr_name="laplacian_pe", is_undirected=False)
+_lap_pe = AddLaplacianEigenvectorPE(k=8, attr_name="laplacian_pe", is_undirected=True)
 _rw_pe = AddRandomWalkPE(walk_length=16, attr_name="rw_pe")
 
 

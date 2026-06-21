@@ -5,8 +5,8 @@ Usage:
     ds = CascadeDataset(root="/path/to/Twitter15_16_dataset-main", name="twitter15")
     data = ds[0]  # PyG Data object
     # data.x          shape [N, 29]  (5 structural + 8 lap_pe + 16 rw_pe)
-    # data.edge_index shape [2, E]
-    # data.edge_attr  shape [E, 1]   (normalized timestamp delta)
+    # data.edge_index shape [2, 2E]  (directed + reverse edges for bidirectional message passing)
+    # data.edge_attr  shape [2E, 1]  (normalized timestamp delta, same value for both directions)
     # data.y          shape [1]      (0=false, 1=true, 2=unverified, 3=non-rumor)
 """
 
@@ -82,11 +82,15 @@ def _build_graph(cascade_id: str, label: int, tree_dir: Path) -> Data | None:
         warnings.warn(f"No edges in cascade: {path}", stacklevel=2)
         return None
 
+    seen_edges: set[tuple[int, int]] = set()
     src_list, dst_list, delta_list = [], [], []
     for src_uid, dst_uid in raw_edges:
         if src_uid not in uid_to_idx or dst_uid not in uid_to_idx:
             continue
         si, di = uid_to_idx[src_uid], uid_to_idx[dst_uid]
+        if si == di or (si, di) in seen_edges:  # drop self-loops and duplicates
+            continue
+        seen_edges.add((si, di))
         src_list.append(si)
         dst_list.append(di)
         delta_list.append(abs(ts_raw[di] - ts_raw[si]))
@@ -95,12 +99,40 @@ def _build_graph(cascade_id: str, label: int, tree_dir: Path) -> Data | None:
         warnings.warn(f"All edges filtered in cascade: {path}", stacklevel=2)
         return None
 
-    edge_index = torch.tensor([src_list, dst_list], dtype=torch.long)
+    # Directed edges (parent → child) — used for structural feature computation
+    edge_index_dir = torch.tensor([src_list, dst_list], dtype=torch.long)
     raw_delta = torch.tensor(delta_list, dtype=torch.float32).unsqueeze(1)
     max_delta = raw_delta.max()
-    edge_attr = raw_delta / (max_delta + 1e-8)
+    edge_attr_dir = raw_delta / (max_delta + 1e-8)
 
-    x = compute_features(edge_index, ts_raw, num_nodes)
+    x = compute_features(edge_index_dir, ts_raw, num_nodes)
+
+    # Add reverse edges so leaves can propagate messages upward during GNN message passing.
+    # 89% of nodes in these cascades are leaves; without reverse edges they are silent.
+    # Direction is already encoded in structural node features (depth, timestamp, subtree_size).
+    edge_index = torch.cat([edge_index_dir, edge_index_dir.flip(0)], dim=1)
+    edge_attr = torch.cat([edge_attr_dir, edge_attr_dir], dim=0)
+    # Deduplicate after concat (handles raw files that already contain both A→B and B→A)
+    edge_index, unique_idx = torch.unique(edge_index, dim=1, return_inverse=False, sorted=False)
+    # torch.unique doesn't return indices for dim-wise; use manual dedup
+    pairs = {}
+    for i in range(edge_index.shape[1]):
+        k = (edge_index[0, i].item(), edge_index[1, i].item())
+        if k not in pairs:
+            pairs[k] = i
+    keep = sorted(pairs.values())
+    # Rebuild from directed+reverse, deduped
+    ei_full = torch.cat([edge_index_dir, edge_index_dir.flip(0)], dim=1)
+    ea_full = torch.cat([edge_attr_dir, edge_attr_dir], dim=0)
+    seen: set[tuple[int, int]] = set()
+    keep_mask = []
+    for i in range(ei_full.shape[1]):
+        k = (ei_full[0, i].item(), ei_full[1, i].item())
+        keep_mask.append(k not in seen)
+        seen.add(k)
+    idx = torch.tensor(keep_mask)
+    edge_index = ei_full[:, idx]
+    edge_attr = ea_full[idx]
     y = torch.tensor([label], dtype=torch.long)
 
     data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr, y=y, num_nodes=num_nodes)
