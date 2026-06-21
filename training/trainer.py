@@ -78,10 +78,15 @@ def run_experiment(
     batch_size: int = 64,
     lr: float = 1e-3,
     weight_decay: float = 1e-4,
+    patience: int | None = None,
     device: str = "cpu",
     verbose: bool = True,
 ) -> dict:
-    """Train model_cls for each seed; return per-seed and aggregate results."""
+    """Train model_cls for each seed; return per-seed and aggregate results.
+
+    Args:
+        patience: epochs without val_f1 improvement before stopping. None = disabled.
+    """
     criterion = nn.CrossEntropyLoss()
     seed_results = []
 
@@ -99,6 +104,7 @@ def run_experiment(
 
         best_val_f1 = -1.0
         best_state = None
+        epochs_no_improve = 0
 
         for epoch in range(1, epochs + 1):
             train_loss = train_epoch(model, train_loader, optimizer, criterion, device)
@@ -108,9 +114,17 @@ def run_experiment(
             if val_metrics["macro_f1"] > best_val_f1:
                 best_val_f1 = val_metrics["macro_f1"]
                 best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+                epochs_no_improve = 0
+            else:
+                epochs_no_improve += 1
 
             if verbose and epoch % 20 == 0:
                 print(f"  seed={seed} epoch={epoch:3d}  train_loss={train_loss:.4f}  val_f1={val_metrics['macro_f1']:.4f}  best={best_val_f1:.4f}")
+
+            if patience is not None and epochs_no_improve >= patience:
+                if verbose:
+                    print(f"  seed={seed} early stop at epoch {epoch}")
+                break
 
         model.load_state_dict(best_state)
         test_metrics = eval_epoch(model, test_loader, criterion, device)
