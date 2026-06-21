@@ -53,8 +53,8 @@ EXPERIMENTS = [
     ("GAT",   GATClassifier,   GAT_KWARGS,   ds16, "results/gat_twitter16.json",   dict(epochs=EPOCHS, warmup_ratio=0.1)),
     ("BiGCN", BiGCNClassifier, BIGCN_KWARGS, ds15, "results/bigcn_twitter15.json", dict(epochs=EPOCHS, warmup_ratio=0.1)),
     ("BiGCN", BiGCNClassifier, BIGCN_KWARGS, ds16, "results/bigcn_twitter16.json", dict(epochs=EPOCHS, warmup_ratio=0.1)),
-    ("GPS",   GPSClassifier,   GPS_KWARGS,   ds15, "results/gps_twitter15.json",   dict(epochs=EPOCHS, lr=1e-3, weight_decay=0.05, warmup_ratio=0.1, patience=40, lap_pe_sign_flip=True, max_nodes_per_batch=16384)),
-    ("GPS",   GPSClassifier,   GPS_KWARGS,   ds16, "results/gps_twitter16.json",   dict(epochs=EPOCHS, lr=1e-3, weight_decay=0.05, warmup_ratio=0.1, patience=40, lap_pe_sign_flip=True, max_nodes_per_batch=16384)),
+    ("GPS",   GPSClassifier,   GPS_KWARGS,   ds15, "results/gps_twitter15.json",   dict(epochs=EPOCHS, lr=1e-3, weight_decay=0.05, warmup_ratio=0.1, patience=40, lap_pe_sign_flip=True, max_nodes_per_batch=8192)),
+    ("GPS",   GPSClassifier,   GPS_KWARGS,   ds16, "results/gps_twitter16.json",   dict(epochs=EPOCHS, lr=1e-3, weight_decay=0.05, warmup_ratio=0.1, patience=40, lap_pe_sign_flip=True, max_nodes_per_batch=8192)),
 ]
 
 for model_name, model_cls, model_kwargs, dataset, out_path, extra_kwargs in EXPERIMENTS:
