@@ -19,7 +19,6 @@ def add_positional_encodings(data: Data) -> Data:
     """Compute Laplacian PE (k=8) and RWPE (length=16) and append to data.x.
 
     If the graph is too small for k=8 eigenvectors the PE is zero-padded.
-    Requires scipy for stable LapPE: pip install scipy
     """
     n = data.num_nodes
 
