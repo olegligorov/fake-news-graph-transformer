@@ -10,12 +10,12 @@ class GATClassifier(nn.Module):
         self.bns = nn.ModuleList()
         self.projs = nn.ModuleList()
 
-        self.convs.append(GATConv(in_channels, hidden_channels, heads=heads, dropout=dropout, concat=True))
+        self.convs.append(GATConv(in_channels, hidden_channels, heads=heads, dropout=0.0, concat=True))
         self.bns.append(nn.BatchNorm1d(hidden_channels * heads))
         self.projs.append(nn.Linear(hidden_channels * heads, hidden_channels))
 
         for _ in range(num_layers - 1):
-            self.convs.append(GATConv(hidden_channels, hidden_channels, heads=heads, dropout=dropout, concat=True))
+            self.convs.append(GATConv(hidden_channels, hidden_channels, heads=heads, dropout=0.0, concat=True))
             self.bns.append(nn.BatchNorm1d(hidden_channels * heads))
             self.projs.append(nn.Linear(hidden_channels * heads, hidden_channels))
 

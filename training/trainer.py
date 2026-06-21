@@ -79,13 +79,15 @@ def run_experiment(
     lr: float = 1e-3,
     weight_decay: float = 1e-4,
     patience: int | None = None,
+    scheduler_patience: int = 10,
     device: str = "cpu",
     verbose: bool = True,
 ) -> dict:
     """Train model_cls for each seed; return per-seed and aggregate results.
 
     Args:
-        patience: epochs without val_f1 improvement before stopping. None = disabled.
+        patience: epochs without val_f1 improvement before early stopping. None = disabled.
+        scheduler_patience: epochs without val_f1 improvement before LR reduction.
     """
     criterion = nn.CrossEntropyLoss()
     seed_results = []
@@ -100,7 +102,9 @@ def run_experiment(
 
         model = model_cls(**model_kwargs).to(device)
         optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=10, factor=0.5)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode="max", patience=scheduler_patience, factor=0.5
+        )
 
         best_val_f1 = -1.0
         best_state = None
@@ -109,7 +113,7 @@ def run_experiment(
         for epoch in range(1, epochs + 1):
             train_loss = train_epoch(model, train_loader, optimizer, criterion, device)
             val_metrics = eval_epoch(model, val_loader, criterion, device)
-            scheduler.step(val_metrics["loss"])
+            scheduler.step(val_metrics["macro_f1"])
 
             if val_metrics["macro_f1"] > best_val_f1:
                 best_val_f1 = val_metrics["macro_f1"]

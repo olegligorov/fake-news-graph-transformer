@@ -4,12 +4,13 @@ Usage:
     from data.dataset import CascadeDataset
     ds = CascadeDataset(root="/path/to/Twitter15_16_dataset-main", name="twitter15")
     data = ds[0]  # PyG Data object
-    # data.x          shape [N, 29]  (5 structural + 8 lap_pe + 16 rw_pe)
+    # data.x          shape [N, 30]  (5 structural + log(num_nodes) broadcast + 8 lap_pe + 16 rw_pe)
     # data.edge_index shape [2, 2E]  (directed + reverse edges for bidirectional message passing)
-    # data.edge_attr  shape [2E, 1]  (normalized timestamp delta, same value for both directions)
+    # data.edge_attr  shape [2E, 2]  (col 0: normalized timestamp delta; col 1: direction flag 1=parent→child 0=child→parent)
     # data.y          shape [1]      (0=false, 1=true, 2=unverified, 3=non-rumor)
 """
 
+import math
 import re
 import warnings
 from pathlib import Path
@@ -107,12 +108,24 @@ def _build_graph(cascade_id: str, label: int, tree_dir: Path) -> Data | None:
 
     x = compute_features(edge_index_dir, ts_raw, num_nodes)
 
+    # Broadcast log(num_nodes) to every node so the model can distinguish
+    # cascade scale — per-cascade normalization elsewhere erases this signal.
+    log_size = torch.full((num_nodes, 1), math.log(num_nodes), dtype=torch.float32)
+    x = torch.cat([x, log_size], dim=1)  # [N, 6]
+
     # Add reverse edges so leaves can propagate messages upward during GNN message passing.
     # 89% of nodes in these cascades are leaves; without reverse edges they are silent.
-    # Direction is already encoded in structural node features (depth, timestamp, subtree_size).
+    # Direction is already encoded in structural node features (depth, timestamp, subtree_size)
+    # and in edge_attr col 1 (1 = parent→child, 0 = child→parent).
     ei_full = torch.cat([edge_index_dir, edge_index_dir.flip(0)], dim=1)
-    ea_full = torch.cat([edge_attr_dir, edge_attr_dir], dim=0)
-    # Deduplicate (handles raw files that already contain both A→B and B→A)
+    # Build edge_attr with direction flag: forward edges get 1, reverse get 0
+    dir_flags = torch.cat([
+        torch.ones(len(src_list), 1),   # forward: parent→child
+        torch.zeros(len(src_list), 1),  # reverse: child→parent
+    ], dim=0)
+    ea_full = torch.cat([torch.cat([edge_attr_dir, edge_attr_dir], dim=0), dir_flags], dim=1)  # [2E, 2]
+    # Deduplicate (handles raw files that already contain both A→B and B→A).
+    # First occurrence wins — forward edges come first in ei_full, so they take priority.
     seen: set[tuple[int, int]] = set()
     keep_mask = []
     for i in range(ei_full.shape[1]):
