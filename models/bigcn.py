@@ -37,9 +37,12 @@ class BiGCNClassifier(nn.Module):
         self.head = nn.Linear(hidden_channels * 2, num_classes)
 
     def forward(self, x, edge_index, batch, edge_attr=None, **kwargs):
-        # Split edge_index by direction flag (col 1 of edge_attr)
+        if edge_attr is None:
+            raise ValueError("BiGCN requires edge_attr with direction flag in column 1")
+        assert edge_attr.shape[1] >= 2, f"BiGCN expects edge_attr with ≥2 columns, got {edge_attr.shape[1]}"
+        # Split edge_index by direction flag (col 1 of edge_attr: 1=parent→child, 0=child→parent)
         if edge_attr is not None:
-            td_mask = edge_attr[:, 1].bool()   # parent→child
+            td_mask = edge_attr[:, 1].bool()   # parent→child (direction flag col 1 = 1)
             bu_mask = ~td_mask                  # child→parent
             td_edge_index = edge_index[:, td_mask]
             bu_edge_index = edge_index[:, bu_mask]

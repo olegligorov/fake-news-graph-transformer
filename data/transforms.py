@@ -14,6 +14,13 @@ from torch_geometric.transforms import AddLaplacianEigenvectorPE, AddRandomWalkP
 _lap_pe = AddLaplacianEigenvectorPE(k=8, attr_name="laplacian_pe", is_undirected=True)
 _rw_pe = AddRandomWalkPE(walk_length=16, attr_name="rw_pe")
 
+# Feature layout constants — used by trainer._flip_lap_pe to locate LapPE columns in x.
+# x = [N, NODE_FEATURES_BASE + LAP_PE_DIM + RW_PE_DIM]
+NODE_FEATURES_BASE = 6   # 5 structural + 1 log(num_nodes)
+LAP_PE_DIM = 8
+RW_PE_DIM = 16
+NODE_FEATURES_TOTAL = NODE_FEATURES_BASE + LAP_PE_DIM + RW_PE_DIM  # 30
+
 
 def add_positional_encodings(data: Data) -> Data:
     """Compute Laplacian PE (k=8) and RWPE (length=16) and append to data.x.

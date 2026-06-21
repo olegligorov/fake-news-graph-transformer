@@ -41,7 +41,8 @@ class GPSClassifier(nn.Module):
             nn.Linear(hidden_channels, num_classes),
         )
 
-    def forward(self, x, edge_index, batch, ptr, edge_attr=None, **kwargs):
+    def forward(self, x, edge_index, batch, edge_attr=None, ptr=None, **kwargs):
+        assert ptr is not None, "GPSClassifier.forward requires ptr (batch.ptr) for root-node readout"
         x = self.input_proj(x)
         for conv in self.convs:
             x = conv(x, edge_index, batch, edge_attr=edge_attr)

@@ -10,6 +10,8 @@ from sklearn.utils.class_weight import compute_class_weight
 from torch_geometric.data import Dataset
 from torch_geometric.loader import DataLoader
 
+from data.transforms import NODE_FEATURES_BASE, LAP_PE_DIM, NODE_FEATURES_TOTAL
+
 
 def stratified_split(dataset: Dataset, train_ratio: float = 0.6, val_ratio: float = 0.2, split_seed: int = 0):
     """Return (train_idx, val_idx, test_idx) lists with stratification on y.
@@ -36,16 +38,19 @@ def _set_seed(seed: int):
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
 
 
-def _flip_lap_pe(batch, lap_pe_start: int = 6, lap_pe_dim: int = 8):
+def _flip_lap_pe(batch, lap_pe_start: int = NODE_FEATURES_BASE, lap_pe_dim: int = LAP_PE_DIM):
     """Randomly flip sign of each LapPE eigenvector for all nodes in the same graph.
 
     LapPE eigenvectors are sign-arbitrary (v and -v are both valid). Without this
     augmentation the model overfits to the arbitrary sign choices in the dataset.
     Operates in-place on batch.x columns [lap_pe_start : lap_pe_start + lap_pe_dim].
     """
-    assert batch.x.shape[1] == 30, f"Expected 30 node features, got {batch.x.shape[1]} — check _flip_lap_pe slice"
+    assert batch.x.shape[1] == NODE_FEATURES_TOTAL, \
+        f"Expected {NODE_FEATURES_TOTAL} node features, got {batch.x.shape[1]} — check data/transforms.py constants"
     signs = (torch.randint(0, 2, (batch.num_graphs, lap_pe_dim), device=batch.x.device) * 2 - 1).float()
     node_signs = signs[batch.batch]  # [num_nodes, lap_pe_dim]
     batch.x[:, lap_pe_start: lap_pe_start + lap_pe_dim] *= node_signs
@@ -82,6 +87,18 @@ def _token_batches(indices: list[int], dataset: Dataset, max_nodes: int, shuffle
     if current:
         batches.append(current)
     return batches
+
+
+def _make_token_loader(indices: list[int], dataset: Dataset, max_nodes: int, shuffle: bool, seed: int) -> list:
+    """Group indices into node-budget batches and pre-collate each group into a Batch.
+
+    Returns a plain list of Batch objects. train_epoch/eval_epoch iterate with
+    `for batch in loader` which works on any iterable — no DataLoader wrapper needed
+    since the batching is already done here.
+    """
+    from torch_geometric.data import Batch
+    batches = _token_batches(indices, dataset, max_nodes, shuffle=shuffle, seed=seed)
+    return [Batch.from_data_list([dataset[i] for i in b]) for b in batches]
 
 
 def train_epoch(model: nn.Module, loader, optimizer, criterion, device, lap_pe_sign_flip: bool = False) -> float:
@@ -174,17 +191,17 @@ def run_experiment(
         _set_seed(seed)
 
         if max_nodes_per_batch is not None:
-            # Token-budget batching: cap total nodes per batch to avoid N_max² OOM in GPS attention
-            train_batches = _token_batches(train_idx, dataset, max_nodes_per_batch, shuffle=True, seed=seed)
-            val_batches   = _token_batches(val_idx,   dataset, max_nodes_per_batch, shuffle=False, seed=seed)
-            test_batches  = _token_batches(test_idx,  dataset, max_nodes_per_batch, shuffle=False, seed=seed)
-            train_loader = [DataLoader([dataset[i] for i in b]) for b in train_batches]
-            val_loader   = [DataLoader([dataset[i] for i in b]) for b in val_batches]
-            test_loader  = [DataLoader([dataset[i] for i in b]) for b in test_batches]
+            # Token-budget batching for GPS multihead attention (avoids N_max² OOM).
+            # Val/test loaders are fixed (no shuffle). Train loader is rebuilt each epoch
+            # with a new seed so graph groupings reshuffle across epochs.
+            val_loader  = _make_token_loader(val_idx,  dataset, max_nodes_per_batch, shuffle=False, seed=seed)
+            test_loader = _make_token_loader(test_idx, dataset, max_nodes_per_batch, shuffle=False, seed=seed)
+            use_token_batching = True
         else:
             train_loader = DataLoader([dataset[i] for i in train_idx], batch_size=batch_size, shuffle=True)
             val_loader   = DataLoader([dataset[i] for i in val_idx],   batch_size=batch_size)
             test_loader  = DataLoader([dataset[i] for i in test_idx],  batch_size=batch_size)
+            use_token_batching = False
 
         model = model_cls(**model_kwargs).to(device)
         optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
@@ -198,6 +215,9 @@ def run_experiment(
         epochs_no_improve = 0
 
         for epoch in range(1, epochs + 1):
+            if use_token_batching:
+                # Rebuild each epoch so graph groupings reshuffle (different seed per epoch)
+                train_loader = _make_token_loader(train_idx, dataset, max_nodes_per_batch, shuffle=True, seed=seed * 10000 + epoch)
             train_loss = train_epoch(model, train_loader, optimizer, criterion, device, lap_pe_sign_flip=lap_pe_sign_flip)
             scheduler.step()
             val_metrics = eval_epoch(model, val_loader, criterion, device)

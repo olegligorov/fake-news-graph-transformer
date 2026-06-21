@@ -37,6 +37,8 @@ ds15 = CascadeDataset(root=DATA_ROOT, name="twitter15")
 ds16 = CascadeDataset(root=DATA_ROOT, name="twitter16")
 IN_CHANNELS = ds15[0].x.shape[1]
 EDGE_DIM = ds15[0].edge_attr.shape[1]
+assert ds16[0].x.shape[1] == IN_CHANNELS and ds16[0].edge_attr.shape[1] == EDGE_DIM, \
+    "ds15 and ds16 feature dimensions differ — check dataset processing"
 print(f"Twitter15: {len(ds15)} graphs  Twitter16: {len(ds16)} graphs  in_channels={IN_CHANNELS}")
 
 GCN_KWARGS   = dict(in_channels=IN_CHANNELS, hidden_channels=128, num_layers=3, dropout=0.1)
@@ -51,8 +53,8 @@ EXPERIMENTS = [
     ("GAT",   GATClassifier,   GAT_KWARGS,   ds16, "results/gat_twitter16.json",   dict(epochs=EPOCHS, warmup_ratio=0.1)),
     ("BiGCN", BiGCNClassifier, BIGCN_KWARGS, ds15, "results/bigcn_twitter15.json", dict(epochs=EPOCHS, warmup_ratio=0.1)),
     ("BiGCN", BiGCNClassifier, BIGCN_KWARGS, ds16, "results/bigcn_twitter16.json", dict(epochs=EPOCHS, warmup_ratio=0.1)),
-    ("GPS",   GPSClassifier,   GPS_KWARGS,   ds15, "results/gps_twitter15.json",   dict(epochs=EPOCHS, warmup_ratio=0.1, patience=40, lap_pe_sign_flip=True, max_nodes_per_batch=16384)),
-    ("GPS",   GPSClassifier,   GPS_KWARGS,   ds16, "results/gps_twitter16.json",   dict(epochs=EPOCHS, warmup_ratio=0.1, patience=40, lap_pe_sign_flip=True, max_nodes_per_batch=16384)),
+    ("GPS",   GPSClassifier,   GPS_KWARGS,   ds15, "results/gps_twitter15.json",   dict(epochs=EPOCHS, lr=1e-3, weight_decay=0.05, warmup_ratio=0.1, patience=40, lap_pe_sign_flip=True, max_nodes_per_batch=16384)),
+    ("GPS",   GPSClassifier,   GPS_KWARGS,   ds16, "results/gps_twitter16.json",   dict(epochs=EPOCHS, lr=1e-3, weight_decay=0.05, warmup_ratio=0.1, patience=40, lap_pe_sign_flip=True, max_nodes_per_batch=16384)),
 ]
 
 for model_name, model_cls, model_kwargs, dataset, out_path, extra_kwargs in EXPERIMENTS:
