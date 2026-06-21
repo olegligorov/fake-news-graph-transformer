@@ -110,20 +110,9 @@ def _build_graph(cascade_id: str, label: int, tree_dir: Path) -> Data | None:
     # Add reverse edges so leaves can propagate messages upward during GNN message passing.
     # 89% of nodes in these cascades are leaves; without reverse edges they are silent.
     # Direction is already encoded in structural node features (depth, timestamp, subtree_size).
-    edge_index = torch.cat([edge_index_dir, edge_index_dir.flip(0)], dim=1)
-    edge_attr = torch.cat([edge_attr_dir, edge_attr_dir], dim=0)
-    # Deduplicate after concat (handles raw files that already contain both A→B and B→A)
-    edge_index, unique_idx = torch.unique(edge_index, dim=1, return_inverse=False, sorted=False)
-    # torch.unique doesn't return indices for dim-wise; use manual dedup
-    pairs = {}
-    for i in range(edge_index.shape[1]):
-        k = (edge_index[0, i].item(), edge_index[1, i].item())
-        if k not in pairs:
-            pairs[k] = i
-    keep = sorted(pairs.values())
-    # Rebuild from directed+reverse, deduped
     ei_full = torch.cat([edge_index_dir, edge_index_dir.flip(0)], dim=1)
     ea_full = torch.cat([edge_attr_dir, edge_attr_dir], dim=0)
+    # Deduplicate (handles raw files that already contain both A→B and B→A)
     seen: set[tuple[int, int]] = set()
     keep_mask = []
     for i in range(ei_full.shape[1]):

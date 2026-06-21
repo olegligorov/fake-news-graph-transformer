@@ -31,7 +31,7 @@ def compute_features(edge_index: torch.Tensor, timestamps: list[float], num_node
         src = edge_index[0].tolist()
         dst = edge_index[1].tolist()
         for u, v in zip(src, dst):
-            if v not in children[u]:
+            if v not in children[u]:  # guard needed for in_deg; set handles children dedup
                 children[u].add(v)
                 in_deg[v] += 1
 
@@ -69,7 +69,9 @@ def compute_features(edge_index: torch.Tensor, timestamps: list[float], num_node
     out_deg = [len(c) for c in children]  # children is a set so no duplicates
 
     # --- assemble raw features ---
-    ts = torch.tensor(timestamps, dtype=torch.float32)
+    # Anchor timestamps to ROOT (node 0) so feature 0 is genuinely "hours since root"
+    root_ts = timestamps[0]
+    ts = torch.tensor([t - root_ts for t in timestamps], dtype=torch.float32)
     dep = torch.tensor(depth, dtype=torch.float32)
     ind = torch.tensor(in_deg, dtype=torch.float32)
     sub = torch.tensor(subtree_size, dtype=torch.float32)
