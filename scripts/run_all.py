@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from data.dataset import CascadeDataset
 from models.gcn import GCNClassifier
 from models.gat import GATClassifier
+from models.bigcn import BiGCNClassifier
 from models.gps import GPSClassifier
 from training.trainer import run_experiment
 
@@ -38,17 +39,20 @@ IN_CHANNELS = ds15[0].x.shape[1]
 EDGE_DIM = ds15[0].edge_attr.shape[1]
 print(f"Twitter15: {len(ds15)} graphs  Twitter16: {len(ds16)} graphs  in_channels={IN_CHANNELS}")
 
-GCN_KWARGS = dict(in_channels=IN_CHANNELS, hidden_channels=128, num_layers=3, dropout=0.1)
-GAT_KWARGS = dict(in_channels=IN_CHANNELS, hidden_channels=128, num_layers=3, heads=4, dropout=0.1)
-GPS_KWARGS = dict(in_channels=IN_CHANNELS, hidden_channels=128, num_layers=3, heads=4, dropout=0.1, edge_dim=EDGE_DIM)
+GCN_KWARGS   = dict(in_channels=IN_CHANNELS, hidden_channels=128, num_layers=3, dropout=0.1)
+GAT_KWARGS   = dict(in_channels=IN_CHANNELS, hidden_channels=128, num_layers=3, heads=4, dropout=0.1)
+BIGCN_KWARGS = dict(in_channels=IN_CHANNELS, hidden_channels=128, num_layers=3, dropout=0.1)
+GPS_KWARGS   = dict(in_channels=IN_CHANNELS, hidden_channels=128, num_layers=3, heads=4, dropout=0.1, edge_dim=EDGE_DIM)
 
 EXPERIMENTS = [
-    ("GCN",  GCNClassifier, GCN_KWARGS, ds15, "results/gcn_twitter15.json",  dict(epochs=EPOCHS, warmup_ratio=0.1)),
-    ("GCN",  GCNClassifier, GCN_KWARGS, ds16, "results/gcn_twitter16.json",  dict(epochs=EPOCHS, warmup_ratio=0.1)),
-    ("GAT",  GATClassifier, GAT_KWARGS, ds15, "results/gat_twitter15.json",  dict(epochs=EPOCHS, warmup_ratio=0.1)),
-    ("GAT",  GATClassifier, GAT_KWARGS, ds16, "results/gat_twitter16.json",  dict(epochs=EPOCHS, warmup_ratio=0.1)),
-    ("GPS",  GPSClassifier, GPS_KWARGS, ds15, "results/gps_twitter15.json",  dict(epochs=EPOCHS, warmup_ratio=0.1, patience=40, lap_pe_sign_flip=True, max_nodes_per_batch=16384)),
-    ("GPS",  GPSClassifier, GPS_KWARGS, ds16, "results/gps_twitter16.json",  dict(epochs=EPOCHS, warmup_ratio=0.1, patience=40, lap_pe_sign_flip=True, max_nodes_per_batch=16384)),
+    ("GCN",   GCNClassifier,   GCN_KWARGS,   ds15, "results/gcn_twitter15.json",   dict(epochs=EPOCHS, warmup_ratio=0.1)),
+    ("GCN",   GCNClassifier,   GCN_KWARGS,   ds16, "results/gcn_twitter16.json",   dict(epochs=EPOCHS, warmup_ratio=0.1)),
+    ("GAT",   GATClassifier,   GAT_KWARGS,   ds15, "results/gat_twitter15.json",   dict(epochs=EPOCHS, warmup_ratio=0.1)),
+    ("GAT",   GATClassifier,   GAT_KWARGS,   ds16, "results/gat_twitter16.json",   dict(epochs=EPOCHS, warmup_ratio=0.1)),
+    ("BiGCN", BiGCNClassifier, BIGCN_KWARGS, ds15, "results/bigcn_twitter15.json", dict(epochs=EPOCHS, warmup_ratio=0.1)),
+    ("BiGCN", BiGCNClassifier, BIGCN_KWARGS, ds16, "results/bigcn_twitter16.json", dict(epochs=EPOCHS, warmup_ratio=0.1)),
+    ("GPS",   GPSClassifier,   GPS_KWARGS,   ds15, "results/gps_twitter15.json",   dict(epochs=EPOCHS, warmup_ratio=0.1, patience=40, lap_pe_sign_flip=True, max_nodes_per_batch=16384)),
+    ("GPS",   GPSClassifier,   GPS_KWARGS,   ds16, "results/gps_twitter16.json",   dict(epochs=EPOCHS, warmup_ratio=0.1, patience=40, lap_pe_sign_flip=True, max_nodes_per_batch=16384)),
 ]
 
 for model_name, model_cls, model_kwargs, dataset, out_path, extra_kwargs in EXPERIMENTS:
