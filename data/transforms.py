@@ -44,5 +44,5 @@ def add_positional_encodings(data: Data) -> Data:
         if hasattr(data, "rw_pe"):
             del data.rw_pe
 
-    data.x = torch.cat([data.x, lap, rw], dim=1)  # [N, 5+8+16=29]
+    data.x = torch.cat([data.x, lap, rw], dim=1)  # [N, 6+8+16=30]
     return data

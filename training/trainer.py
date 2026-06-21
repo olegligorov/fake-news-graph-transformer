@@ -1,3 +1,4 @@
+import math
 import random
 
 import numpy as np
@@ -5,21 +6,26 @@ import torch
 import torch.nn as nn
 from sklearn.metrics import f1_score
 from sklearn.model_selection import train_test_split
+from sklearn.utils.class_weight import compute_class_weight
 from torch_geometric.data import Dataset
 from torch_geometric.loader import DataLoader
 
 
-def stratified_split(dataset: Dataset, train_ratio: float = 0.6, val_ratio: float = 0.2, seed: int = 42):
-    """Return (train_idx, val_idx, test_idx) lists with stratification on y."""
+def stratified_split(dataset: Dataset, train_ratio: float = 0.6, val_ratio: float = 0.2, split_seed: int = 0):
+    """Return (train_idx, val_idx, test_idx) lists with stratification on y.
+
+    split_seed is fixed across model seeds so all seeds see the same train/val/test split.
+    Only model initialization varies across seeds, enabling paired comparisons.
+    """
     labels = [dataset[i].y.item() for i in range(len(dataset))]
     indices = list(range(len(dataset)))
     test_ratio = 1.0 - train_ratio - val_ratio
 
     train_idx, temp_idx, _, temp_labels = train_test_split(
-        indices, labels, test_size=(1.0 - train_ratio), stratify=labels, random_state=seed
+        indices, labels, test_size=(1.0 - train_ratio), stratify=labels, random_state=split_seed
     )
     val_idx, test_idx = train_test_split(
-        temp_idx, test_size=test_ratio / (test_ratio + val_ratio), stratify=temp_labels, random_state=seed
+        temp_idx, test_size=test_ratio / (test_ratio + val_ratio), stratify=temp_labels, random_state=split_seed
     )
     return train_idx, val_idx, test_idx
 
@@ -33,13 +39,13 @@ def _set_seed(seed: int):
 
 
 def _flip_lap_pe(batch, lap_pe_start: int = 6, lap_pe_dim: int = 8):
-    assert batch.x.shape[1] == 30, f"Expected 30 node features, got {batch.x.shape[1]} — check _flip_lap_pe slice"
     """Randomly flip sign of each LapPE eigenvector for all nodes in the same graph.
 
     LapPE eigenvectors are sign-arbitrary (v and -v are both valid). Without this
     augmentation the model overfits to the arbitrary sign choices in the dataset.
     Operates in-place on batch.x columns [lap_pe_start : lap_pe_start + lap_pe_dim].
     """
+    assert batch.x.shape[1] == 30, f"Expected 30 node features, got {batch.x.shape[1]} — check _flip_lap_pe slice"
     signs = (torch.randint(0, 2, (batch.num_graphs, lap_pe_dim), device=batch.x.device) * 2 - 1).float()
     node_signs = signs[batch.batch]  # [num_nodes, lap_pe_dim]
     batch.x[:, lap_pe_start: lap_pe_start + lap_pe_dim] *= node_signs
@@ -53,9 +59,10 @@ def train_epoch(model: nn.Module, loader: DataLoader, optimizer, criterion, devi
         if lap_pe_sign_flip:
             _flip_lap_pe(batch)
         optimizer.zero_grad()
-        out = model(batch.x, batch.edge_index, batch.batch, edge_attr=batch.edge_attr)
+        out = model(batch.x, batch.edge_index, batch.batch, edge_attr=batch.edge_attr, ptr=batch.ptr)
         loss = criterion(out, batch.y.view(-1))
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
         total_loss += loss.item() * batch.num_graphs
     return total_loss / len(loader.dataset)
@@ -68,7 +75,7 @@ def eval_epoch(model: nn.Module, loader: DataLoader, criterion, device) -> dict:
     all_preds, all_labels = [], []
     for batch in loader:
         batch = batch.to(device)
-        out = model(batch.x, batch.edge_index, batch.batch, edge_attr=batch.edge_attr)
+        out = model(batch.x, batch.edge_index, batch.batch, edge_attr=batch.edge_attr, ptr=batch.ptr)
         loss = criterion(out, batch.y.view(-1))
         total_loss += loss.item() * batch.num_graphs
         preds = out.argmax(dim=1)
@@ -92,9 +99,9 @@ def run_experiment(
     epochs: int = 200,
     batch_size: int = 64,
     lr: float = 1e-3,
-    weight_decay: float = 1e-4,
+    weight_decay: float = 0.05,
     patience: int | None = None,
-    scheduler_patience: int = 10,
+    warmup_ratio: float = 0.1,
     lap_pe_sign_flip: bool = False,
     device: str = "cpu",
     verbose: bool = True,
@@ -103,26 +110,45 @@ def run_experiment(
 
     Args:
         patience: epochs without val_f1 improvement before early stopping. None = disabled.
-        scheduler_patience: epochs without val_f1 improvement before LR reduction.
+        warmup_ratio: fraction of total steps used for linear LR warmup (cosine schedule after).
         lap_pe_sign_flip: randomly flip LapPE eigenvector signs each training batch.
                           Required for GPS; not needed for GCN/GAT.
     """
-    criterion = nn.CrossEntropyLoss()
+    # Fixed split across all seeds — only model init varies
+    train_idx, val_idx, test_idx = stratified_split(dataset, split_seed=0)
+
+    train_loader = DataLoader([dataset[i] for i in train_idx], batch_size=batch_size, shuffle=True)
+    val_loader   = DataLoader([dataset[i] for i in val_idx],   batch_size=batch_size)
+    test_loader  = DataLoader([dataset[i] for i in test_idx],  batch_size=batch_size)
+
+    # Class-weighted CE to handle label imbalance
+    y_train = [dataset[i].y.item() for i in train_idx]
+    num_classes = int(max(dataset[i].y.item() for i in range(len(dataset)))) + 1
+    classes_present = np.unique(y_train)
+    w = compute_class_weight("balanced", classes=classes_present, y=y_train)
+    weights = np.ones(num_classes, dtype=np.float32)
+    for c, wc in zip(classes_present, w):
+        weights[int(c)] = wc
+    criterion = nn.CrossEntropyLoss(weight=torch.tensor(weights, dtype=torch.float32, device=device))
+
     seed_results = []
 
     for seed in seeds:
         _set_seed(seed)
-        train_idx, val_idx, test_idx = stratified_split(dataset, seed=seed)
-
-        train_loader = DataLoader([dataset[i] for i in train_idx], batch_size=batch_size, shuffle=True)
-        val_loader   = DataLoader([dataset[i] for i in val_idx],   batch_size=batch_size)
-        test_loader  = DataLoader([dataset[i] for i in test_idx],  batch_size=batch_size)
 
         model = model_cls(**model_kwargs).to(device)
-        optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode="max", patience=scheduler_patience, factor=0.5
-        )
+        optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+
+        total_steps = epochs
+        warmup_steps = int(warmup_ratio * total_steps)
+
+        def lr_lambda(step):
+            if step < warmup_steps:
+                return step / max(warmup_steps, 1)
+            progress = (step - warmup_steps) / max(total_steps - warmup_steps, 1)
+            return 0.5 * (1.0 + math.cos(math.pi * progress))
+
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
         best_val_f1 = -float("inf")
         best_state = None
@@ -130,8 +156,8 @@ def run_experiment(
 
         for epoch in range(1, epochs + 1):
             train_loss = train_epoch(model, train_loader, optimizer, criterion, device, lap_pe_sign_flip=lap_pe_sign_flip)
+            scheduler.step()
             val_metrics = eval_epoch(model, val_loader, criterion, device)
-            scheduler.step(val_metrics["macro_f1"])
 
             if val_metrics["macro_f1"] > best_val_f1:
                 best_val_f1 = val_metrics["macro_f1"]
@@ -140,7 +166,7 @@ def run_experiment(
             else:
                 epochs_no_improve += 1
 
-            if verbose and epoch % 20 == 0:
+            if verbose and epoch % 10 == 0:
                 print(f"  seed={seed} epoch={epoch:3d}  train_loss={train_loss:.4f}  val_f1={val_metrics['macro_f1']:.4f}  best={best_val_f1:.4f}")
 
             if patience is not None and epochs_no_improve >= patience:
