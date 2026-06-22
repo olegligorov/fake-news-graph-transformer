@@ -22,7 +22,7 @@ from models.gps import GPSClassifier
 from models.cascade_gps import CascadeGPSClassifier
 from training.trainer import run_experiment
 
-DATA_ROOT = "Twitter15_16_dataset-main"
+DATA_ROOT = "Twitter15_Twitter16"
 SEEDS = [0, 1, 2, 3, 4]
 EPOCHS = 200
 
