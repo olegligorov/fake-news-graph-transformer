@@ -2,11 +2,12 @@
 
 Usage:
     from data.dataset import CascadeDataset
-    ds = CascadeDataset(root="/path/to/Twitter15_16_dataset-main", name="twitter15")
+    ds = CascadeDataset(root="Twitter15_Twitter16", name="twitter15")
     data = ds[0]  # PyG Data object
     # data.x          shape [N, 30]  (5 structural + log(num_nodes) broadcast + 8 lap_pe + 16 rw_pe)
     # data.edge_index shape [2, 2E]  (directed + reverse edges for bidirectional message passing)
     # data.edge_attr  shape [2E, 2]  (col 0: normalized timestamp delta; col 1: direction flag 1=parent→child 0=child→parent)
+    # data.root_text  shape [1, 384] (frozen MiniLM embedding of the source tweet)
     # data.y          shape [1]      (0=false, 1=true, 2=unverified, 3=non-rumor)
 """
 
@@ -20,6 +21,7 @@ from torch_geometric.data import Data, InMemoryDataset
 
 from data.features import compute_features
 from data.transforms import add_positional_encodings
+from sentence_transformers import SentenceTransformer
 
 LABEL_MAP = {"false": 0, "true": 1, "unverified": 2, "non-rumor": 3}
 
@@ -146,11 +148,13 @@ class CascadeDataset(InMemoryDataset):
     """PyG InMemoryDataset for Twitter15 or Twitter16 cascade graphs.
 
     Args:
-        root: path to the folder containing twitter15/ and twitter16/ subdirectories
+        root: path to the folder containing twitter15/ and twitter16/ subdirectories.
+            Defaults to ``Twitter15_Twitter16`` — the distribution that ships
+            ``source_tweets.txt`` alongside the cascade trees (see README).
         name: "twitter15" or "twitter16"
     """
 
-    def __init__(self, root: str, name: str):
+    def __init__(self, root: str = "Twitter15_Twitter16", name: str = "twitter15"):
         name = name.lower()
         if name not in ("twitter15", "twitter16"):
             raise ValueError(f"name must be 'twitter15' or 'twitter16', got '{name}'")
@@ -180,6 +184,7 @@ class CascadeDataset(InMemoryDataset):
     def process(self):
         label_path = Path(self.raw_dir) / "label.txt"
         tree_dir = Path(self.raw_dir) / "tree"
+        source_tweets_path = Path(self.raw_dir) / "source_tweets.txt"
 
         labels: dict[str, int] = {}
         for line in label_path.read_text(encoding="utf-8").splitlines():
@@ -189,10 +194,47 @@ class CascadeDataset(InMemoryDataset):
             label_str, cascade_id = line.split(":", 1)
             labels[cascade_id] = LABEL_MAP[label_str]
 
+        source_texts: dict[str, str] = {}
+        for line in source_tweets_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            tweet_id, _, text = line.partition("\t")
+            source_texts[tweet_id.strip()] = text.strip()
+
+        missing = [cid for cid in labels if cid not in source_texts]
+        if missing:
+            preview = ", ".join(missing[:5])
+            raise ValueError(
+                f"{len(missing)} cascade(s) in {tree_dir} have no entry in "
+                f"{source_tweets_path}: {preview}"
+                + (" ..." if len(missing) > 5 else "")
+            )
+
+        cascade_ids = list(labels.keys())
+        texts = [source_texts[cid] for cid in cascade_ids]
+        encoder = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+        embeddings = encoder.encode(
+            texts,
+            batch_size=64,
+            convert_to_tensor=True,
+            normalize_embeddings=True,
+            show_progress_bar=True,
+        )
+        embeddings = embeddings.detach().cpu().to(torch.float32)
+        del encoder
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         data_list: list[Data] = []
-        for cascade_id, label in labels.items():
+        for idx, (cascade_id, label) in enumerate(labels.items()):
             graph = _build_graph(cascade_id, label, tree_dir)
-            if graph is not None:
-                data_list.append(graph)
+            if graph is None:
+                continue
+            graph.root_text = embeddings[idx].unsqueeze(0)
+            assert graph.root_text.shape == (1, 384), (
+                f"root_text shape contract violated for {cascade_id}: "
+                f"{tuple(graph.root_text.shape)}"
+            )
+            data_list.append(graph)
 
         self.save(data_list, self.processed_paths[0])

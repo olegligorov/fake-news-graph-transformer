@@ -14,8 +14,18 @@ class BiGCNClassifier(nn.Module):
     the classification head.
     """
 
-    def __init__(self, in_channels: int, hidden_channels: int, num_layers: int, dropout: float, num_classes: int = 4):
+    def __init__(
+        self,
+        in_channels: int,
+        hidden_channels: int,
+        num_layers: int,
+        dropout: float,
+        num_classes: int = 4,
+        use_text: bool = False,
+        text_dim: int = 384,
+    ):
         super().__init__()
+        self.use_text = use_text
 
         self.td_convs = nn.ModuleList()  # top-down stream
         self.bu_convs = nn.ModuleList()  # bottom-up stream
@@ -34,21 +44,24 @@ class BiGCNClassifier(nn.Module):
             self.bu_bns.append(nn.BatchNorm1d(hidden_channels))
 
         self.dropout = nn.Dropout(dropout)
-        self.head = nn.Linear(hidden_channels * 2, num_classes)
 
-    def forward(self, x, edge_index, batch, edge_attr=None, **kwargs):
+        if use_text:
+            self.text_proj = nn.Linear(text_dim, hidden_channels)
+            self.text_norm = nn.LayerNorm(hidden_channels)
+            self.text_dropout = nn.Dropout(dropout)
+            head_in = hidden_channels * 3  # td + bu + text
+        else:
+            head_in = hidden_channels * 2  # td + bu
+        self.head = nn.Linear(head_in, num_classes)
+
+    def forward(self, x, edge_index, batch, edge_attr=None, root_text=None, **kwargs):
         if edge_attr is None:
             raise ValueError("BiGCN requires edge_attr with direction flag in column 1")
         assert edge_attr.shape[1] >= 2, f"BiGCN expects edge_attr with ≥2 columns, got {edge_attr.shape[1]}"
-        # Split edge_index by direction flag (col 1 of edge_attr: 1=parent→child, 0=child→parent)
-        if edge_attr is not None:
-            td_mask = edge_attr[:, 1].bool()   # parent→child (direction flag col 1 = 1)
-            bu_mask = ~td_mask                  # child→parent
-            td_edge_index = edge_index[:, td_mask]
-            bu_edge_index = edge_index[:, bu_mask]
-        else:
-            td_edge_index = edge_index
-            bu_edge_index = edge_index
+        td_mask = edge_attr[:, 1].bool()
+        bu_mask = ~td_mask
+        td_edge_index = edge_index[:, td_mask]
+        bu_edge_index = edge_index[:, bu_mask]
 
         td, bu = x, x
         for td_conv, bu_conv, td_bn, bu_bn in zip(self.td_convs, self.bu_convs, self.td_bns, self.bu_bns):
@@ -57,5 +70,8 @@ class BiGCNClassifier(nn.Module):
 
         td_g = global_mean_pool(td, batch)
         bu_g = global_mean_pool(bu, batch)
-        g = torch.cat([td_g, bu_g], dim=-1)  # [B, 2H]
+        g = torch.cat([td_g, bu_g], dim=-1)
+        if self.use_text:
+            t = self.text_dropout(self.text_norm(self.text_proj(root_text)))
+            g = torch.cat([g, t], dim=-1)
         return self.head(g)

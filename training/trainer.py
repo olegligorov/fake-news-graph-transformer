@@ -1,10 +1,13 @@
+import json
 import math
+import os
 import random
+import time
 
 import numpy as np
 import torch
 import torch.nn as nn
-from sklearn.metrics import f1_score
+from sklearn.metrics import confusion_matrix, f1_score
 from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
 from torch_geometric.data import Dataset
@@ -110,7 +113,7 @@ def train_epoch(model: nn.Module, loader, optimizer, criterion, device, lap_pe_s
         if lap_pe_sign_flip:
             _flip_lap_pe(batch)
         optimizer.zero_grad()
-        out = model(batch.x, batch.edge_index, batch.batch, edge_attr=batch.edge_attr, ptr=batch.ptr)
+        out = model(batch.x, batch.edge_index, batch.batch, edge_attr=batch.edge_attr, ptr=batch.ptr, root_text=getattr(batch, "root_text", None))
         loss = criterion(out, batch.y.view(-1))
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -121,14 +124,14 @@ def train_epoch(model: nn.Module, loader, optimizer, criterion, device, lap_pe_s
 
 
 @torch.no_grad()
-def eval_epoch(model: nn.Module, loader, criterion, device) -> dict:
+def eval_epoch(model: nn.Module, loader, criterion, device, num_classes: int | None = None) -> dict:
     model.eval()
     total_loss = 0.0
     all_preds, all_labels = [], []
     n_graphs = 0
     for batch in loader:
         batch = batch.to(device)
-        out = model(batch.x, batch.edge_index, batch.batch, edge_attr=batch.edge_attr, ptr=batch.ptr)
+        out = model(batch.x, batch.edge_index, batch.batch, edge_attr=batch.edge_attr, ptr=batch.ptr, root_text=getattr(batch, "root_text", None))
         loss = criterion(out, batch.y.view(-1))
         total_loss += loss.item() * batch.num_graphs
         preds = out.argmax(dim=1)
@@ -138,10 +141,15 @@ def eval_epoch(model: nn.Module, loader, criterion, device) -> dict:
 
     acc = sum(p == l for p, l in zip(all_preds, all_labels)) / len(all_labels)
     macro_f1 = f1_score(all_labels, all_preds, average="macro", zero_division=0)
+    labels_axis = list(range(num_classes)) if num_classes is not None else None
+    per_class_f1 = f1_score(all_labels, all_preds, average=None, labels=labels_axis, zero_division=0).tolist()
+    cm = confusion_matrix(all_labels, all_preds, labels=labels_axis).tolist()
     return {
         "loss": total_loss / n_graphs,
         "acc": acc,
         "macro_f1": macro_f1,
+        "per_class_f1": per_class_f1,
+        "confusion_matrix": cm,
     }
 
 
@@ -160,6 +168,8 @@ def run_experiment(
     max_nodes_per_batch: int | None = None,
     device: str = "cpu",
     verbose: bool = True,
+    out_path: str | None = None,
+    save_checkpoint: bool = False,
 ) -> dict:
     """Train model_cls for each seed; return per-seed and aggregate results.
 
@@ -167,15 +177,13 @@ def run_experiment(
         patience: epochs without val_f1 improvement before early stopping. None = disabled.
         warmup_ratio: fraction of total epochs used for linear LR warmup (cosine decay after).
         lap_pe_sign_flip: randomly flip LapPE eigenvector signs each training batch.
-                          Required for GPS; not needed for GCN/GAT.
-        max_nodes_per_batch: if set, use token-budget batching (cap total nodes per batch).
-                             Required for GPS multihead attention to avoid OOM on large cascades.
-                             Ignored when None (uses fixed batch_size instead).
+        max_nodes_per_batch: token-budget batching for GPS; None uses fixed batch_size.
+        out_path: if set, write the aggregate JSON to this path.
+        save_checkpoint: if True and out_path is set, also save a .pt checkpoint per seed
+                         alongside out_path (same stem, seed suffix, .pt extension).
     """
-    # Fixed split across all seeds — only model init varies
     train_idx, val_idx, test_idx = stratified_split(dataset, split_seed=0)
 
-    # Class-weighted CE to handle label imbalance
     y_train = [dataset[i].y.item() for i in train_idx]
     num_classes = int(max(dataset[i].y.item() for i in range(len(dataset)))) + 1
     classes_present = np.unique(y_train)
@@ -191,9 +199,6 @@ def run_experiment(
         _set_seed(seed)
 
         if max_nodes_per_batch is not None:
-            # Token-budget batching for GPS multihead attention (avoids N_max² OOM).
-            # Val/test loaders are fixed (no shuffle). Train loader is rebuilt each epoch
-            # with a new seed so graph groupings reshuffle across epochs.
             val_loader  = _make_token_loader(val_idx,  dataset, max_nodes_per_batch, shuffle=False, seed=seed)
             test_loader = _make_token_loader(test_idx, dataset, max_nodes_per_batch, shuffle=False, seed=seed)
             use_token_batching = True
@@ -211,16 +216,16 @@ def run_experiment(
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, _make_lr_lambda(warmup_steps, total_steps))
 
         best_val_f1 = -float("inf")
-        best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}  # snapshot before training
+        best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
         epochs_no_improve = 0
 
+        t0 = time.time()
         for epoch in range(1, epochs + 1):
             if use_token_batching:
-                # Rebuild each epoch so graph groupings reshuffle (different seed per epoch)
                 train_loader = _make_token_loader(train_idx, dataset, max_nodes_per_batch, shuffle=True, seed=seed * 10000 + epoch)
             train_loss = train_epoch(model, train_loader, optimizer, criterion, device, lap_pe_sign_flip=lap_pe_sign_flip)
             scheduler.step()
-            val_metrics = eval_epoch(model, val_loader, criterion, device)
+            val_metrics = eval_epoch(model, val_loader, criterion, device, num_classes=num_classes)
 
             if val_metrics["macro_f1"] > best_val_f1:
                 best_val_f1 = val_metrics["macro_f1"]
@@ -237,23 +242,36 @@ def run_experiment(
                     print(f"  seed={seed} early stop at epoch {epoch}")
                 break
 
+        train_time_sec = time.time() - t0
         model.load_state_dict(best_state)
-        test_metrics = eval_epoch(model, test_loader, criterion, device)
+        test_metrics = eval_epoch(model, test_loader, criterion, device, num_classes=num_classes)
         seed_results.append({
             "seed": seed,
             "val_f1": best_val_f1,
             "test_acc": test_metrics["acc"],
             "test_f1": test_metrics["macro_f1"],
+            "test_per_class_f1": test_metrics["per_class_f1"],
+            "confusion_matrix": test_metrics["confusion_matrix"],
+            "train_time_sec": train_time_sec,
         })
         if verbose:
             print(f"  seed={seed}  best_val_f1={best_val_f1:.4f}  test_acc={test_metrics['acc']:.4f}  test_f1={test_metrics['macro_f1']:.4f}")
 
+        if out_path is not None and save_checkpoint:
+            stem = os.path.splitext(out_path)[0]
+            torch.save(best_state, f"{stem}_seed{seed}.pt")
+
     test_f1s = [r["test_f1"] for r in seed_results]
     test_accs = [r["test_acc"] for r in seed_results]
-    return {
+    result = {
         "per_seed": seed_results,
         "test_f1_mean": float(np.mean(test_f1s)),
         "test_f1_std":  float(np.std(test_f1s)),
         "test_acc_mean": float(np.mean(test_accs)),
         "test_acc_std":  float(np.std(test_accs)),
     }
+    if out_path is not None:
+        os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+        with open(out_path, "w") as f:
+            json.dump(result, f, indent=2)
+    return result
