@@ -21,6 +21,7 @@ from torch_geometric.data import Data, InMemoryDataset
 
 from data.features import compute_features
 from data.transforms import add_positional_encodings
+from sentence_transformers import SentenceTransformer
 
 LABEL_MAP = {"false": 0, "true": 1, "unverified": 2, "non-rumor": 3}
 
@@ -185,15 +186,6 @@ class CascadeDataset(InMemoryDataset):
         tree_dir = Path(self.raw_dir) / "tree"
         source_tweets_path = Path(self.raw_dir) / "source_tweets.txt"
 
-        legacy_processed = (
-            Path(self.root).parent / "Twitter15_16_dataset-main" / self.name / "processed"
-        )
-        if legacy_processed.is_dir():
-            print(
-                f"[CascadeDataset] note: legacy cache exists at {legacy_processed}; "
-                "it is not used by this root and can be removed manually."
-            )
-
         labels: dict[str, int] = {}
         for line in label_path.read_text(encoding="utf-8").splitlines():
             line = line.strip()
@@ -212,13 +204,11 @@ class CascadeDataset(InMemoryDataset):
         missing = [cid for cid in labels if cid not in source_texts]
         if missing:
             preview = ", ".join(missing[:5])
-            raise RuntimeError(
+            raise ValueError(
                 f"{len(missing)} cascade(s) in {tree_dir} have no entry in "
                 f"{source_tweets_path}: {preview}"
                 + (" ..." if len(missing) > 5 else "")
             )
-
-        from sentence_transformers import SentenceTransformer
 
         cascade_ids = list(labels.keys())
         texts = [source_texts[cid] for cid in cascade_ids]
