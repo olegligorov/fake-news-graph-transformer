@@ -197,11 +197,14 @@ class CascadeGPSClassifier(nn.Module):
         num_time_freqs: int = 4,
         ffn_mult: int = 4,
         temp_bias_hidden: int = 16,
+        use_text: bool = False,
+        text_dim: int = 384,
     ):
         super().__init__()
         assert hidden_channels % heads == 0, \
             f"hidden_channels ({hidden_channels}) must be divisible by heads ({heads})"
 
+        self.use_text = use_text
         self.num_time_freqs = num_time_freqs
         self.heads = heads
 
@@ -253,8 +256,16 @@ class CascadeGPSClassifier(nn.Module):
         # 3-way readout pool: root + attentional + mean.
         self.attn_pool_gate = nn.Linear(hidden_channels, 1)
 
+        if use_text:
+            self.text_proj = nn.Linear(text_dim, hidden_channels)
+            self.text_norm = nn.LayerNorm(hidden_channels)
+            self.text_dropout = nn.Dropout(dropout)
+            readout_dim = hidden_channels * 4  # root + attn + mean + text
+        else:
+            readout_dim = hidden_channels * 3  # root + attn + mean
+
         self.head = nn.Sequential(
-            nn.Linear(hidden_channels * 3, hidden_channels),
+            nn.Linear(readout_dim, hidden_channels),
             nn.GELU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_channels, num_classes),
@@ -316,7 +327,7 @@ class CascadeGPSClassifier(nn.Module):
         }
 
     def forward(self, x: torch.Tensor, edge_index: torch.Tensor, batch: torch.Tensor,
-                edge_attr: torch.Tensor = None, ptr: torch.Tensor = None, **kwargs) -> torch.Tensor:
+                edge_attr: torch.Tensor = None, ptr: torch.Tensor = None, root_text: torch.Tensor = None, **kwargs) -> torch.Tensor:
         assert edge_attr is not None, "CascadeGPSClassifier.forward requires edge_attr"
         assert ptr is not None, "CascadeGPSClassifier.forward requires ptr (batch.ptr) for root readout"
 
@@ -348,6 +359,9 @@ class CascadeGPSClassifier(nn.Module):
         mean_emb = scatter(h, batch, dim=0, dim_size=num_graphs, reduce="mean")          # [B, H]
 
         g = torch.cat([root_emb, attn_emb, mean_emb], dim=-1)                            # [B, 3H]
+        if self.use_text:
+            t = self.text_dropout(self.text_norm(self.text_proj(root_text)))
+            g = torch.cat([g, t], dim=-1)
         return self.head(g)
 
 
