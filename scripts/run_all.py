@@ -1,4 +1,4 @@
-"""Run all experiments: GCN, GAT, GPS on Twitter15 and Twitter16.
+"""Run all experiments: GCN, GAT, BiGCN, GPS, CascadeGPS on Twitter15 and Twitter16.
 
 Usage (from project root):
     python scripts/run_all.py
@@ -19,6 +19,7 @@ from models.gcn import GCNClassifier
 from models.gat import GATClassifier
 from models.bigcn import BiGCNClassifier
 from models.gps import GPSClassifier
+from models.cascade_gps import CascadeGPSClassifier
 from training.trainer import run_experiment
 
 DATA_ROOT = "Twitter15_16_dataset-main"
@@ -41,20 +42,23 @@ assert ds16[0].x.shape[1] == IN_CHANNELS and ds16[0].edge_attr.shape[1] == EDGE_
     "ds15 and ds16 feature dimensions differ — check dataset processing"
 print(f"Twitter15: {len(ds15)} graphs  Twitter16: {len(ds16)} graphs  in_channels={IN_CHANNELS}")
 
-GCN_KWARGS   = dict(in_channels=IN_CHANNELS, hidden_channels=128, num_layers=3, dropout=0.1)
-GAT_KWARGS   = dict(in_channels=IN_CHANNELS, hidden_channels=128, num_layers=3, heads=4, dropout=0.1)
-BIGCN_KWARGS = dict(in_channels=IN_CHANNELS, hidden_channels=128, num_layers=3, dropout=0.1)
-GPS_KWARGS   = dict(in_channels=IN_CHANNELS, hidden_channels=128, num_layers=4, heads=4, dropout=0.1, edge_dim=EDGE_DIM)
+GCN_KWARGS         = dict(in_channels=IN_CHANNELS, hidden_channels=128, num_layers=3, dropout=0.1)
+GAT_KWARGS         = dict(in_channels=IN_CHANNELS, hidden_channels=128, num_layers=3, heads=4, dropout=0.1)
+BIGCN_KWARGS       = dict(in_channels=IN_CHANNELS, hidden_channels=128, num_layers=3, dropout=0.1)
+GPS_KWARGS         = dict(in_channels=IN_CHANNELS, hidden_channels=128, num_layers=4, heads=4, dropout=0.1, edge_dim=EDGE_DIM)
+CASCADE_GPS_KWARGS = dict(in_channels=IN_CHANNELS, hidden_channels=128, num_layers=3, heads=4, dropout=0.1, edge_dim=EDGE_DIM)
 
 EXPERIMENTS = [
-    ("GCN",   GCNClassifier,   GCN_KWARGS,   ds15, "results/gcn_twitter15.json",   dict(epochs=EPOCHS, warmup_ratio=0.1)),
-    ("GCN",   GCNClassifier,   GCN_KWARGS,   ds16, "results/gcn_twitter16.json",   dict(epochs=EPOCHS, warmup_ratio=0.1)),
-    ("GAT",   GATClassifier,   GAT_KWARGS,   ds15, "results/gat_twitter15.json",   dict(epochs=EPOCHS, warmup_ratio=0.1)),
-    ("GAT",   GATClassifier,   GAT_KWARGS,   ds16, "results/gat_twitter16.json",   dict(epochs=EPOCHS, warmup_ratio=0.1)),
-    ("BiGCN", BiGCNClassifier, BIGCN_KWARGS, ds15, "results/bigcn_twitter15.json", dict(epochs=EPOCHS, warmup_ratio=0.1)),
-    ("BiGCN", BiGCNClassifier, BIGCN_KWARGS, ds16, "results/bigcn_twitter16.json", dict(epochs=EPOCHS, warmup_ratio=0.1)),
-    ("GPS",   GPSClassifier,   GPS_KWARGS,   ds15, "results/gps_twitter15.json",   dict(epochs=EPOCHS, lr=1e-3, weight_decay=0.05, warmup_ratio=0.1, patience=40, lap_pe_sign_flip=True, max_nodes_per_batch=8192)),
-    ("GPS",   GPSClassifier,   GPS_KWARGS,   ds16, "results/gps_twitter16.json",   dict(epochs=EPOCHS, lr=1e-3, weight_decay=0.05, warmup_ratio=0.1, patience=40, lap_pe_sign_flip=True, max_nodes_per_batch=8192)),
+    ("GCN",        GCNClassifier,         GCN_KWARGS,         ds15, "results/gcn_twitter15.json",         dict(epochs=EPOCHS, warmup_ratio=0.1)),
+    ("GCN",        GCNClassifier,         GCN_KWARGS,         ds16, "results/gcn_twitter16.json",         dict(epochs=EPOCHS, warmup_ratio=0.1)),
+    ("GAT",        GATClassifier,         GAT_KWARGS,         ds15, "results/gat_twitter15.json",         dict(epochs=EPOCHS, warmup_ratio=0.1)),
+    ("GAT",        GATClassifier,         GAT_KWARGS,         ds16, "results/gat_twitter16.json",         dict(epochs=EPOCHS, warmup_ratio=0.1)),
+    ("BiGCN",      BiGCNClassifier,       BIGCN_KWARGS,       ds15, "results/bigcn_twitter15.json",       dict(epochs=EPOCHS, warmup_ratio=0.1)),
+    ("BiGCN",      BiGCNClassifier,       BIGCN_KWARGS,       ds16, "results/bigcn_twitter16.json",       dict(epochs=EPOCHS, warmup_ratio=0.1)),
+    ("GPS",        GPSClassifier,         GPS_KWARGS,         ds15, "results/gps_twitter15.json",         dict(epochs=EPOCHS, lr=1e-3, weight_decay=0.05, warmup_ratio=0.1, patience=40, lap_pe_sign_flip=True, max_nodes_per_batch=8192)),
+    ("GPS",        GPSClassifier,         GPS_KWARGS,         ds16, "results/gps_twitter16.json",         dict(epochs=EPOCHS, lr=1e-3, weight_decay=0.05, warmup_ratio=0.1, patience=40, lap_pe_sign_flip=True, max_nodes_per_batch=8192)),
+    ("CascadeGPS", CascadeGPSClassifier,  CASCADE_GPS_KWARGS, ds15, "results/cascade_gps_twitter15.json", dict(epochs=EPOCHS, lr=1e-3, weight_decay=0.05, warmup_ratio=0.1, patience=40, lap_pe_sign_flip=True, max_nodes_per_batch=2048)),
+    ("CascadeGPS", CascadeGPSClassifier,  CASCADE_GPS_KWARGS, ds16, "results/cascade_gps_twitter16.json", dict(epochs=EPOCHS, lr=1e-3, weight_decay=0.05, warmup_ratio=0.1, patience=40, lap_pe_sign_flip=True, max_nodes_per_batch=2048)),
 ]
 
 for model_name, model_cls, model_kwargs, dataset, out_path, extra_kwargs in EXPERIMENTS:
@@ -70,13 +74,13 @@ for model_name, model_cls, model_kwargs, dataset, out_path, extra_kwargs in EXPE
     print(f"  → saved to {out_path}")
 
 # Print final summary table
-print("\n" + "=" * 65)
-print(f"{'Model':<10} {'Dataset':<14} {'Acc mean±std':>16}  {'Macro-F1 mean±std':>18}")
-print("-" * 65)
+print("\n" + "=" * 70)
+print(f"{'Model':<12} {'Dataset':<14} {'Acc mean±std':>16}  {'Macro-F1 mean±std':>18}")
+print("-" * 70)
 for model_name, _, _, dataset, out_path, _ in EXPERIMENTS:
     ds_name = "Twitter15" if dataset is ds15 else "Twitter16"
     with open(out_path) as f:
         res = json.load(f)
-    print(f"{model_name:<10} {ds_name:<14} {res['test_acc_mean']:.3f} ± {res['test_acc_std']:.3f}        {res['test_f1_mean']:.3f} ± {res['test_f1_std']:.3f}")
-print("=" * 65)
+    print(f"{model_name:<12} {ds_name:<14} {res['test_acc_mean']:.3f} ± {res['test_acc_std']:.3f}        {res['test_f1_mean']:.3f} ± {res['test_f1_std']:.3f}")
+print("=" * 70)
 print("(5 seeds, 60/20/20 stratified split, best val-F1 checkpoint)")
